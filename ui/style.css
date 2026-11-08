@@ -207,3 +207,10 @@ main{min-width:0; padding:var(--s7) var(--s7) var(--s8); overflow-y:auto}
   .provider-grid{grid-template-columns:repeat(auto-fill,minmax(120px,1fr))}
   .progress-header,.progress-footer{flex-wrap:wrap}
 }
+
+/* ─── Advanced collapsible options ─── */
+.advanced-details{margin-top:var(--s4); padding:var(--s3); border:1px dashed var(--rule-2); border-radius:8px; background:var(--paper)}
+.advanced-summary{cursor:pointer; font-size:.8125rem; font-weight:600; color:var(--ink-2); user-select:none; display:flex; align-items:center; gap:6px; outline:none}
+.advanced-summary:hover{color:var(--ink)}
+.advanced-hint{font-size:.75rem; color:var(--ink-3); margin-top:8px; margin-bottom:4px; line-height:1.4}
+.advanced-fields-container{margin-top:var(--s2)}

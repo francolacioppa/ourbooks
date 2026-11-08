@@ -20,7 +20,7 @@ fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
 const app = express();
 app.use(express.json());
 app.use('/downloads', express.static(DOWNLOADS_DIR));
-app.use(express.static(path.join(__dirname, 'ui')));
+app.use(express.static(path.join(__dirname, 'ui'), { etag: false, maxAge: 0 }));
 
 const server = createServer(app);
 const wss = new WebSocketServer({ server });
@@ -62,9 +62,11 @@ const PROVIDERS = {
     label: 'Zanichelli',
     emoji: '📕',
     fields: [
-      { name: 'username', label: 'Email account', type: 'text', required: true, placeholder: 'user@email.com' },
-      { name: 'password', label: 'Password', type: 'password', required: true, placeholder: '••••••••' },
+      { name: 'username', label: 'Email account', type: 'text', required: false, placeholder: 'user@email.com' },
+      { name: 'password', label: 'Password', type: 'password', required: false, placeholder: '••••••••' },
       { name: 'isbn', label: 'Libro', type: 'select', required: true, placeholder: 'Seleziona un libro', dynamicOptions: true },
+      { name: 'token', label: 'Token JWT (se accedi con Zaino Digitale)', type: 'text', required: false, placeholder: 'eyJ0eXAi...', advanced: true },
+      { name: 'usertoken', label: 'Kitaboo UserToken (facoltativo)', type: 'text', required: false, placeholder: 'MjMwNTAzODox...', advanced: true },
     ]
   },
   bsmart: {
@@ -488,44 +490,37 @@ app.post('/api/bsmart-books', async (req, res) => {
 });
 
 app.post('/api/zanichelli-books', async (req, res) => {
-  const { username, password } = req.body || {};
-  if (!username || !password) {
-    return res.status(400).json({ error: 'Campi richiesti: username, password' });
+  const { username, password, token: inputToken } = req.body || {};
+  let token = inputToken;
+
+  if (!token && (!username || !password)) {
+    return res.status(400).json({ error: 'Fornisci il token JWT oppure email e password' });
   }
 
   try {
-    const loginRes = await fetch("https://idp.zanichelli.it/v4/login/", {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: `username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`,
-    });
-    
-    if (!loginRes.ok) {
-        return res.status(401).json({ error: 'Login fallito: credenziali non valide' });
-    }
-
-    const loginData = await loginRes.json();
-    const token = loginData.token;
     if (!token) {
+      const loginRes = await fetch("https://idp.zanichelli.it/v4/login/", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: `username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`,
+      });
+      
+      if (!loginRes.ok) {
+        return res.status(401).json({ error: 'Login fallito: credenziali non valide. Se accedi con Zaino Digitale usa il Token JWT (Opzioni avanzate).' });
+      }
+
+      const loginData = await loginRes.json();
+      token = loginData.token;
+      if (!token) {
         return res.status(401).json({ error: 'Login fallito: token mancante' });
+      }
     }
 
     const cookie = `token=${token}`;
-    const myZanichelliRes = await fetch("https://my.zanichelli.it/?loginMode=myZanichelli", {
-      headers: { cookie },
-    });
-    
-    const setCookieHeader = (myZanichelliRes.headers.raw ? myZanichelliRes.headers.raw()['set-cookie'] : myZanichelliRes.headers.getSetCookie()) || [];
-    const loginCookies = setCookieHeader.map(c => c.split(';')[0]);
-    const dashboardCookies = {};
-    for (let c of loginCookies) {
-      const [key, value] = c.split('=');
-      dashboardCookies[key] = value;
-    }
 
     await fetch('https://api-catalogo.zanichelli.it/v3/dashboard/user', {
-      headers: { 'myz-token': dashboardCookies['myz_token'] },
-    });
+      headers: { Cookie: cookie },
+    }).catch(() => {});
 
     let returnBooks = [];
     let page = 1;
@@ -533,43 +528,46 @@ app.post('/api/zanichelli-books', async (req, res) => {
 
     while (true) {
       let r = await fetch(`https://api-catalogo.zanichelli.it/v3/dashboard/search?sort%5Bfield%5D=year_date&sort%5Bdirection%5D=desc&searchString&pageNumber=${page}&rows=100`, {
-        headers: { 'myz-token': dashboardCookies['myz_token'] },
+        headers: { Cookie: cookie },
       });
-      if (r.status == 403) {
+      if (r.status == 403 || r.status == 401) {
         notATeacher = true;
         break;
       }
       const pData = await r.json();
-      if (!pData.data || pData.data.pagination.pages == 0) break;
+      if (!pData.data || !pData.data.licenses || pData.data.licenses.length === 0) {
+        notATeacher = true;
+        break;
+      }
 
       for (let license of pData.data.licenses || []) {
-        if (license.volume.ereader_url == '') continue;
+        if (!license.volume || license.volume.ereader_url == '') continue;
         returnBooks.push({
             isbn: license.volume.isbn,
-            title: license.volume.opera.title
+            title: license.volume.opera?.title || license.volume.title
         });
       }
-      if (pData.data.pagination.pages == page) break;
+      if (pData.data.pagination?.pages <= page) break;
       page++;
     }
 
     if (notATeacher) {
       let request = await fetch('https://api-catalogo.zanichelli.it/v3/dashboard/licenses/real', {
-        headers: { 'myz-token': dashboardCookies['myz_token'] },
+        headers: { Cookie: cookie },
       });
       if (request.ok) {
           const resData = await request.json();
           for (let license of resData.realLicenses || []) {
-            if (license.volume.ereader_url == '') continue;
+            if (!license.volume || license.volume.ereader_url == '') continue;
             returnBooks.push({
                 isbn: license.volume.isbn,
-                title: license.volume.opera.title
+                title: license.volume.opera?.title || license.volume.title
             });
           }
       }
     }
 
-    res.status(200).json({ books: returnBooks });
+    res.status(200).json({ books: returnBooks, token });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

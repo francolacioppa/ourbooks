@@ -29,6 +29,15 @@ const argv = yargs(process.argv.slice(2))
 		type: "string",
 		description: "Password",
 	})
+	.option("token", {
+		alias: "t",
+		type: "string",
+		description: "JWT Token (per accesso Zaino Digitale / SSO)",
+	})
+	.option("usertoken", {
+		type: "string",
+		description: "Kitaboo User Token (per libri webreader)",
+	})
 	.option("isbn", {
 		alias: "i",
 		type: "string",
@@ -605,22 +614,39 @@ function drawInvisibleTextLayer(doc, textPage) {
 	doc.restore();
 }
 
-async function downloadKitabooBook(bookReaderUrl, doOcr, outputDir, sessionCookies = '') {
-	bookReaderUrl = new URL(bookReaderUrl.hash.substring(1), 'https://webreader.zanichelli.it');
+async function downloadKitabooBook(bookReaderUrl, doOcr, outputDir, sessionCookies = '', explicitBookId = null, explicitUsertoken = null) {
+	let bookID = explicitBookId;
+	let usertoken = explicitUsertoken;
 
-	let bookID = bookReaderUrl.searchParams.get('bookID');
-	let usertoken = bookReaderUrl.searchParams.get('usertoken');
+	if (bookReaderUrl) {
+		try {
+			const rawUrl = typeof bookReaderUrl === 'string' ? bookReaderUrl : (bookReaderUrl.href || '');
+			const hashPart = bookReaderUrl.hash ? bookReaderUrl.hash.substring(1) : (rawUrl.includes('#') ? rawUrl.split('#')[1] : '');
+			const targetUrl = hashPart ? new URL(hashPart, 'https://webreader.zanichelli.it') : new URL(rawUrl, 'https://webreader.zanichelli.it');
+			bookID = bookID || targetUrl.searchParams.get('bookID');
+			usertoken = usertoken || targetUrl.searchParams.get('usertoken');
+		} catch (e) {}
+	}
 
-	console.log("Exchangin usertoken...");
+	while (!bookID) {
+		bookID = prompt("Book ID Kitaboo: ");
+	}
 
-	usertoken = await fetch(`https://microservices.kitaboo.eu/v1/zanichelli/user/123/pc/validateUserToken?usertoken=${encodeURIComponent(usertoken)}`, {
-		headers: { 
-			"User-Agent": USER_AGENT,
-		},
-	}).then(res => res.json()).then(res => res.userToken).catch((err) => {
-		console.log("Error: ", err);
-		process.exit(1);
-	});
+	while (!usertoken) {
+		console.log("\nPer i libri Kitaboo serve l'header 'usertoken'.");
+		console.log("Puoi copiarlo da Chrome (F12 -> Network -> cerca 'downloadBook' o 'validateUserToken' -> copia il valore dell'header usertoken):");
+		usertoken = prompt("usertoken: ");
+	}
+
+	try {
+		console.log("Validating usertoken...");
+		const validateRes = await fetch(`https://microservices.kitaboo.eu/v1/zanichelli/user/123/pc/validateUserToken?usertoken=${encodeURIComponent(usertoken)}`, {
+			headers: { "User-Agent": USER_AGENT },
+		}).then(res => res.json());
+		if (validateRes && validateRes.userToken) {
+			usertoken = validateRes.userToken;
+		}
+	} catch (err) {}
 	
 	console.log("Fetching book details...");
 
@@ -648,19 +674,37 @@ async function downloadKitabooBook(bookReaderUrl, doOcr, outputDir, sessionCooki
 
 	let downloadBookRequest = await fetch(`https://webreader.zanichelli.it/downloadapi/auth/contentserver/book/123234234/HTML5/${bookID}/downloadBook?state=online`, {
 		headers: {
-			"User-Agent": USER_AGENT, // refuses to respond without it
-			"Referer": "https://webreader.zanichelli.it/",
+			"User-Agent": USER_AGENT,
+			"Referer": WEBREADER_REFERER,
 			usertoken,
-			cookie: `usertoken=${usertoken}`,
-		}, // and wtf is 123234234 supposed to be? it doesn't seem to do anything, but it needs to be there or it returns 403 forbidden, nice job zanichelli
+			cookie: sessionCookies ? `${sessionCookies}; usertoken=${usertoken}` : `usertoken=${usertoken}`,
+			x: 'ijgahdfcibghicgecgjjgaaga',
+		},
 	}).catch((err) => {
 		console.log("Error: ", err);
 		process.exit(1);
 	});
 
-	let downloadBook = await downloadBookRequest.json();
+	if (!downloadBookRequest.ok) {
+		console.log(`\n❌ Richiesta downloadBook fallita con stato HTTP ${downloadBookRequest.status}.`);
+		console.log("💡 Suggerimento di risoluzione:");
+		console.log("   Il libro richiede l'header di sessione Kitaboo (usertoken).");
+		console.log("   1. Nel browser apri il libro su my.zanichelli.it (Web Reader).");
+		console.log("   2. Premi F12 -> scheda Network (Rete) -> cerca 'downloadBook' o 'validateUserToken'.");
+		console.log("   3. Copia il valore dell'header di richiesta 'usertoken'.");
+		console.log("   4. Incollalo nel campo 'Kitaboo UserToken' (in Opzioni avanzate) e riprova.\n");
+		process.exit(1);
+	}
 
-	let readerCookies = mergeCookieHeaders(getSetCookies(downloadBookRequest), [`usertoken=${usertoken}`]);
+	let downloadBook = await downloadBookRequest.json();
+	if (downloadBook.responseMsg) {
+		const match = downloadBook.responseMsg.match(/\/(\d+)\/(html5|fixed_epub_image)\//);
+		if (match) {
+			ebookID = match[1];
+		}
+	}
+
+	let readerCookies = mergeCookieHeaders(getSetCookies(downloadBookRequest), [`usertoken=${usertoken}`, sessionCookies || '']);
 
 	let rawPrivateKey = downloadBook.privateKey;
 	let jwtToken = downloadBook.jwtToken; // note how jwt = json web token, so what you are saying is json web token token... gg
@@ -1115,116 +1159,120 @@ async function downloadBookTabBook(redirectUrl, cookie, doOcr, outputDir) { // b
 }
 
 export async function run(options = {}) {
+	let token = options.token || argv.token || process.env.ZANICHELLI_TOKEN;
 	let username = options.username || argv.username;
 	let password = options.password || argv.password;
+	let explicitUsertoken = options.usertoken || argv.usertoken || process.env.KITABOO_USERTOKEN;
 	const doOcr = (options.ocr || argv.ocr) === 'on';
 	const outputDir = process.env.OURBOOKS_OUTPUT_DIR || '.';
 
-	while (!username)
-		username = prompt("Username(email): ");
+	if (!token) {
+		while (!username && !token) {
+			const input = prompt("Email (oppure incolla direttamente il token JWT per Zaino Digitale): ");
+			if (input && input.length > 50) {
+				token = input.trim();
+				break;
+			}
+			username = input ? input.trim() : '';
+		}
 
-	while (!password)
-		password = prompt("Password: ");
+		if (!token) {
+			while (!password)
+				password = prompt("Password: ");
 
-	console.log("Logging in...");
-
-	let token = await fetch("https://idp.zanichelli.it/v4/login/", {
-		method: "POST",
-		headers: {
-			"content-type": "application/x-www-form-urlencoded",
-		},
-		body: `username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`,
-	}).then((res) => res.json()).then((res) => res.token).catch((err) => {
-		console.log("Error: ", err);
-		process.exit(1);
-	});
+			console.log("Logging in...");
+			const loginRes = await fetch("https://idp.zanichelli.it/v4/login/", {
+				method: "POST",
+				headers: {
+					"content-type": "application/x-www-form-urlencoded",
+				},
+				body: `username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`,
+			}).catch((err) => {
+				console.log("Errore di rete durante il login:", err.message);
+				process.exit(1);
+			});
+			const loginData = await loginRes.json().catch(() => ({}));
+			token = loginData.token;
+			if (!token) {
+				console.log("\n❌ Login fallito: credenziali non valide.");
+				console.log("💡 Se accedi tramite Zaino Digitale o Google, non hai una password Zanichelli.");
+				console.log("   Come risolvere:");
+				console.log("   1. Apri https://my.zanichelli.it nel browser e fai l'accesso.");
+				console.log("   2. Premi F12 -> Application (Applicazione) -> Cookies -> 'https://my.zanichelli.it'");
+				console.log("   3. Copia il valore del cookie 'token' e incollalo nelle Opzioni avanzate (o usa --token).\n");
+				process.exit(1);
+			}
+		}
+	}
 
 	let cookie = `token=${token}`;
 
-	let loginCookies = await fetch("https://my.zanichelli.it/?loginMode=myZanichelli", {
-		headers: { cookie },
-	}).then((res) => {
-		const rawCookies = res.headers.raw ? res.headers.raw()['set-cookie'] : res.headers.getSetCookie();
-		return (rawCookies || []).map((cookie) => cookie.split(';')[0]);
-	}).catch((err) => {
-		console.log("Error: ", err);
-		process.exit(1);
-	});
-
-	let dashboardCookies = {};
-
-	for (let loginCookie of loginCookies) {
-		let [key, value] = loginCookie.split('=');
-		dashboardCookies[key] = value;
-	}
-	const sessionCookieHeader = mergeCookieHeaders([cookie], loginCookies);
-
 	console.log("Fetching available books...");
 
-	/*await fetch('https://api-catalogo.zanichelli.it/v3/dashboard/init', {
-		headers: { 'myz-token': dashboardCookies['myz_token'] },
-	}).then(res => res.text()).then(console.log).catch((err) => {
-		console.log("Error: ", err);
-		process.exit(1);
-	});*/ // keeping this, perhaps it's needed in the future
-
 	await fetch('https://api-catalogo.zanichelli.it/v3/dashboard/user', {
-		headers: { 'myz-token': dashboardCookies['myz_token'] },
+		headers: { Cookie: cookie },
 	}).then(res => res.json()).then((res) => {
-		console.log(`Logged in as: ${res.firstName} ${res.lastName}`)
-	}).catch((err) => {
-		console.log("Error: ", err);
-		process.exit(1);
-	}); // we don't really care about the response, but apparently it's required to access the book list
+		if (res && res.firstName) {
+			console.log(`Logged in as: ${res.firstName} ${res.lastName}`);
+		}
+	}).catch(() => {});
 
 	let books = {};
-
 	let page = 1;
 	let notATeacher = false;
 
 	while (true) {
 		let response = await fetch(`https://api-catalogo.zanichelli.it/v3/dashboard/search?sort%5Bfield%5D=year_date&sort%5Bdirection%5D=desc&searchString&pageNumber=${page}&rows=100`, {
-			headers: { 'myz-token': dashboardCookies['myz_token'] },
+			headers: { Cookie: cookie },
 		}).catch((err) => {
 			console.log("Error: ", err);
 			process.exit(1);
 		});
-		if (response.status == 403) {
+		if (response.status == 403 || response.status == 401) {
 			notATeacher = true;
 			break;
 		}
 		response = await response.json();
-		if (!response.data || response.data.pagination.pages == 0) {
-			console.log("No books found");
-			process.exit(0);
+		if (!response.data || !response.data.licenses || response.data.licenses.length === 0) {
+			notATeacher = true;
+			break;
 		}
 		for (let license of response.data.licenses || []) {
-			if (license.volume.ereader_url == '') continue;
+			if (!license.volume || license.volume.ereader_url == '') continue;
 			books[license.volume.isbn] = {
-				title: license.volume.opera.title,
+				title: license.volume.opera?.title || license.volume.title,
+				volumeTitle: license.volume.title,
 				ereader_url: license.volume.ereader_url,
-				isbns: license.volume.isbns,
-			}
+				bookID: license.volume.ereader_info?.id,
+				isbns: license.volume.isbns || [license.volume.isbn],
+			};
 		}
-		if (response.data.pagination.pages == page) break;
+		if (response.data.pagination?.pages <= page) break;
 		page++;
 	}
 
 	if (notATeacher) {
 		let request = await fetch('https://api-catalogo.zanichelli.it/v3/dashboard/licenses/real', {
-			headers: { 'myz-token': dashboardCookies['myz_token'] },
+			headers: { Cookie: cookie },
 		}).then((res) => res.json()).catch((err) => {
 			console.log("Error: ", err);
 			process.exit(1);
 		});
 		for (let license of (request.realLicenses || [])) {
-			if (license.volume.ereader_url == '') continue;
+			if (!license.volume || license.volume.ereader_url == '') continue;
 			books[license.volume.isbn] = {
-				title: license.volume.opera.title,
+				title: license.volume.opera?.title || license.volume.title,
+				volumeTitle: license.volume.title,
 				ereader_url: license.volume.ereader_url,
-				isbns: license.volume.isbns
-			}
+				bookID: license.volume.ereader_info?.id,
+				isbns: license.volume.isbns || [license.volume.isbn],
+			};
 		}
+	}
+
+	if (Object.keys(books).length === 0) {
+		console.log("No books found");
+		process.exit(0);
 	}
 
 	console.log("Available books:");
@@ -1234,24 +1282,46 @@ export async function run(options = {}) {
 
 	while (!isbn)
 		isbn = prompt("ISBN: ");
-	
+
+	if (!books[isbn]) {
+		for (const [k, b] of Object.entries(books)) {
+			if (b.isbns && b.isbns.includes(isbn)) {
+				isbn = k;
+				break;
+			}
+		}
+	}
+
+	const selectedBook = books[isbn];
+	if (!selectedBook) {
+		console.log(`ISBN ${isbn} non trovato nei libri disponibili.`);
+		process.exit(1);
+	}
+
+	console.log(`Selezionato: ${selectedBook.title} ${selectedBook.volumeTitle ? '(' + selectedBook.volumeTitle + ')' : ''}`);
 	console.log("Detecting reader...");
 
-	let bookReaderUrl = await fetch(books[isbn].ereader_url, {
-		headers: { cookie },
-		redirect: 'manual',
-	}).then((res) => res.headers.get('location')).catch((err) => {
-		console.log("Error: ", err);
-		process.exit(1);
-	});
+	let isBookTab = false;
+	let bookReaderUrl = null;
 
-	bookReaderUrl = new URL(bookReaderUrl);
+	if (selectedBook.ereader_url) {
+		try {
+			bookReaderUrl = await fetch(selectedBook.ereader_url, {
+				headers: { Cookie: cookie },
+				redirect: 'manual',
+			}).then((res) => res.headers.get('location'));
+		} catch (e) {}
+	}
 
-	if (bookReaderUrl.host == 'web-booktab.zanichelli.it') {
+	if (bookReaderUrl && bookReaderUrl.includes('web-booktab.zanichelli.it')) {
+		isBookTab = true;
+	}
+
+	if (isBookTab) {
 		console.log("BookTab book detected");
-		await downloadBookTabBook(books[isbn].ereader_url, cookie, doOcr, outputDir);
+		await downloadBookTabBook(selectedBook.ereader_url, cookie, doOcr, outputDir);
 	} else {
 		console.log("Kitaboo book detected");
-		await downloadKitabooBook(bookReaderUrl, doOcr, outputDir, sessionCookieHeader);
+		await downloadKitabooBook(bookReaderUrl, doOcr, outputDir, cookie, selectedBook.bookID, explicitUsertoken);
 	}
 }

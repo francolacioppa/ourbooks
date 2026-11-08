@@ -104,8 +104,36 @@ function selectProvider(id) {
 
   /* render fields */
   formFields.innerHTML = '';
-  for (const field of p.fields) {
+  const standardFields = p.fields.filter(f => !f.advanced);
+  const advancedFields = p.fields.filter(f => f.advanced);
+
+  for (const field of standardFields) {
     formFields.appendChild(buildField(field));
+  }
+
+  if (advancedFields.length > 0) {
+    const details = document.createElement('details');
+    details.className = 'advanced-details';
+    details.id = 'advanced-options-details';
+
+    const summary = document.createElement('summary');
+    summary.className = 'advanced-summary';
+    summary.innerHTML = '⚙️ Opzioni avanzate (Zaino Digitale / Token)';
+    details.appendChild(summary);
+
+    const container = document.createElement('div');
+    container.className = 'advanced-fields-container';
+
+    const hint = document.createElement('p');
+    hint.className = 'advanced-hint';
+    hint.textContent = 'Usa questi campi se accedi con Zaino Digitale/SSO (senza password) o per fornire manualmente i token di sessione.';
+    container.appendChild(hint);
+
+    for (const field of advancedFields) {
+      container.appendChild(buildField(field));
+    }
+    details.appendChild(container);
+    formFields.appendChild(details);
   }
 
   /* Setup Sanoma GEDI loader */
@@ -314,6 +342,8 @@ function setupLaterzeBookLoader() {
 
       if (!res.ok) {
         isbnField.innerHTML = `<option value="">${data.error || 'Errore di caricamento'}</option>`;
+        const details = document.getElementById('advanced-options-details');
+        if (details) details.open = true;
         return;
       }
 
@@ -438,26 +468,28 @@ let zanSyncRequestId = 0;
 function setupZanichelliBookLoader() {
   clearTimeout(zanSyncTimer);
 
+  const tokenField = document.getElementById('field-token');
   const usernameField = document.getElementById('field-username');
   const passwordField = document.getElementById('field-password');
   const isbnField = document.getElementById('field-isbn');
 
-  if (!usernameField || !passwordField || !isbnField) return;
+  if (!isbnField) return;
 
   async function syncZanBooks() {
     clearTimeout(zanSyncTimer);
 
-    const username = usernameField.value?.trim();
-    const password = passwordField.value?.trim();
+    const token = tokenField?.value?.trim() || '';
+    const username = usernameField?.value?.trim() || '';
+    const password = passwordField?.value?.trim() || '';
 
-    if (!username || !password) {
+    if (!token && (!username || !password)) {
       zanLastCredentialsKey = '';
-      isbnField.innerHTML = '<option value="">Inserisci email e password</option>';
+      isbnField.innerHTML = '<option value="">Inserisci token JWT oppure email e password</option>';
       isbnField.disabled = true;
       return;
     }
 
-    const credentialsKey = `${username}::${password}`;
+    const credentialsKey = token ? `token::${token}` : `${username}::${password}`;
     if (credentialsKey === zanLastCredentialsKey) return;
 
     zanLastCredentialsKey = credentialsKey;
@@ -470,7 +502,7 @@ function setupZanichelliBookLoader() {
       const res = await fetch('/api/zanichelli-books', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password })
+        body: JSON.stringify({ token, username, password })
       });
 
       const data = await res.json();
@@ -484,6 +516,10 @@ function setupZanichelliBookLoader() {
       if (!Array.isArray(data.books) || data.books.length === 0) {
         isbnField.innerHTML = '<option value="">Nessun libro trovato</option>';
         return;
+      }
+
+      if (tokenField && !tokenField.value && data.token) {
+        tokenField.value = data.token;
       }
 
       isbnField.innerHTML = '<option value="">Seleziona un libro</option>';
@@ -500,14 +536,24 @@ function setupZanichelliBookLoader() {
     }
   }
 
-  usernameField.addEventListener('input', () => {
-    clearTimeout(zanSyncTimer);
-    zanSyncTimer = setTimeout(syncZanBooks, 450);
-  });
-  passwordField.addEventListener('input', () => {
-    clearTimeout(zanSyncTimer);
-    zanSyncTimer = setTimeout(syncZanBooks, 450);
-  });
+  if (tokenField) {
+    tokenField.addEventListener('input', () => {
+      clearTimeout(zanSyncTimer);
+      zanSyncTimer = setTimeout(syncZanBooks, 450);
+    });
+  }
+  if (usernameField) {
+    usernameField.addEventListener('input', () => {
+      clearTimeout(zanSyncTimer);
+      zanSyncTimer = setTimeout(syncZanBooks, 450);
+    });
+  }
+  if (passwordField) {
+    passwordField.addEventListener('input', () => {
+      clearTimeout(zanSyncTimer);
+      zanSyncTimer = setTimeout(syncZanBooks, 450);
+    });
+  }
 
   syncZanBooks();
 }
