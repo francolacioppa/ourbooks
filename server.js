@@ -11,7 +11,7 @@ import {
   loginSanoma,
   getBookCatalog
 } from './providers/src/sanoma/auth.js';
-import { loginLoescher, fetchLoescherBooks } from './providers/loescher.js';
+import { loginLoescher, fetchLoescherBooks, filterDownloadableLoescherBooks } from './providers/loescher.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -604,8 +604,7 @@ app.post('/api/loescher-books', async (req, res) => {
     }
 
     const books = await fetchLoescherBooks(token);
-    const downloadable = books
-      .filter(b => b.hasPdf)
+    const downloadable = filterDownloadableLoescherBooks(books)
       .map(b => ({ isbn: b.isbn, title: b.title }));
 
     res.status(200).json({ books: downloadable, token });

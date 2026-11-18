@@ -61,15 +61,28 @@ export async function fetchLoescherBooks(token) {
     .filter(item => item && item.opera && item.opera.isbn)
     .map(item => {
       const opera = item.opera;
+      const isDemo = item.tipologia === 'd' || String(opera.isbn).endsWith('_demo');
       const pdfPath = opera.pdf || (opera.isbn ? `/mialim2/api/v1/book/pdf/${opera.isbn}.pdf` : null);
       return {
         id: opera.id,
         isbn: String(opera.isbn),
-        title: opera.titolo || `Libro ${opera.isbn}`,
+        title: opera.nome || opera.titolo || `Libro ${opera.isbn}`,
+        author: opera.autore || '',
+        isDemo,
         pdfPath,
         hasPdf: Boolean(opera.pdf)
       };
     });
+}
+
+export function filterDownloadableLoescherBooks(books) {
+  const owned = books.filter(b => b.hasPdf && !b.isDemo);
+  if (owned.length > 0) {
+    return owned;
+  }
+  return books
+    .filter(b => b.hasPdf)
+    .map(b => ({ ...b, title: `[DEMO] ${b.title}` }));
 }
 
 async function downloadFileWithProgress(url, destPath) {
@@ -197,7 +210,7 @@ export async function run(options = {}) {
     process.exit(1);
   }
 
-  const downloadableBooks = books.filter(b => b.hasPdf);
+  const downloadableBooks = filterDownloadableLoescherBooks(books);
   if (downloadableBooks.length === 0) {
     console.log('No downloadable PDF books found');
     process.exit(0);
