@@ -149,7 +149,7 @@ export async function run(options = {}) {
   let token = options.token || argv.token || process.env.LOESCHER_TOKEN;
   let username = options.username || argv.username;
   let password = options.password || argv.password;
-  let isbn = options.isbn || argv.isbn;
+  let isbn = options.isbn != null ? String(options.isbn).trim() : (argv.isbn != null ? String(argv.isbn).trim() : '');
   const outputFilename = options.output || argv.output;
   const outputDir = process.env.OURBOOKS_OUTPUT_DIR || '.';
 
@@ -226,7 +226,7 @@ export async function run(options = {}) {
     isbn = prompt('ISBN: ').trim();
   }
 
-  const selectedBook = downloadableBooks.find(b => b.isbn === isbn);
+  const selectedBook = downloadableBooks.find(b => String(b.isbn).trim() === String(isbn).trim());
   if (!selectedBook) {
     console.log(`ISBN ${isbn} non trovato tra i libri scaricabili.`);
     process.exit(1);
