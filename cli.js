@@ -23,7 +23,8 @@ async function selectProvider() {
         "hubscuola",
         "dibooklaterza",
         "zanichelli",
-        "bsmart"
+        "bsmart",
+        "loescher"
         // there'll be more providers in the future, but I currently don't have books to test em so if you want to contribute feel free to open a PR with your provider implementation
       ]
     }

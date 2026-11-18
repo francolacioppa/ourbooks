@@ -153,6 +153,10 @@ function selectProvider(id) {
     setupZanichelliBookLoader();
   }
 
+  if (id === 'loescher') {
+    setupLoescherBookLoader();
+  }
+
   if (id === 'bsmart') {
     setupBsmartBookLoader();
   }
@@ -461,12 +465,12 @@ function setupHubscuolaBookLoader() {
   syncHubBooks();
 }
 
-/* ─── Zanichelli books loader ─── */
-let zanSyncTimer = null;
-let zanLastCredentialsKey = '';
-let zanSyncRequestId = 0;
-function setupZanichelliBookLoader() {
-  clearTimeout(zanSyncTimer);
+/* ─── Token/Credentials books loader (Zanichelli & Loescher) ─── */
+let tokenBookSyncTimer = null;
+let tokenBookSyncRequestId = 0;
+function setupTokenIsbnBookLoader(endpoint) {
+  clearTimeout(tokenBookSyncTimer);
+  let lastCredentialsKey = '';
 
   const tokenField = document.getElementById('field-token');
   const usernameField = document.getElementById('field-username');
@@ -475,41 +479,43 @@ function setupZanichelliBookLoader() {
 
   if (!isbnField) return;
 
-  async function syncZanBooks() {
-    clearTimeout(zanSyncTimer);
+  async function syncBooks() {
+    clearTimeout(tokenBookSyncTimer);
 
     const token = tokenField?.value?.trim() || '';
     const username = usernameField?.value?.trim() || '';
     const password = passwordField?.value?.trim() || '';
 
     if (!token && (!username || !password)) {
-      zanLastCredentialsKey = '';
+      lastCredentialsKey = '';
       isbnField.innerHTML = '<option value="">Inserisci token JWT oppure email e password</option>';
       isbnField.disabled = true;
       return;
     }
 
     const credentialsKey = token ? `token::${token}` : `${username}::${password}`;
-    if (credentialsKey === zanLastCredentialsKey) return;
+    if (credentialsKey === lastCredentialsKey) return;
 
-    zanLastCredentialsKey = credentialsKey;
-    const requestId = ++zanSyncRequestId;
+    lastCredentialsKey = credentialsKey;
+    const requestId = ++tokenBookSyncRequestId;
 
     isbnField.innerHTML = '<option value="">Caricamento libri...</option>';
     isbnField.disabled = true;
 
     try {
-      const res = await fetch('/api/zanichelli-books', {
+      const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token, username, password })
       });
 
       const data = await res.json();
-      if (requestId !== zanSyncRequestId) return;
+      if (requestId !== tokenBookSyncRequestId) return;
 
       if (!res.ok) {
         isbnField.innerHTML = `<option value="">${data.error || 'Errore di caricamento'}</option>`;
+        const details = document.getElementById('advanced-options-details');
+        if (details) details.open = true;
         return;
       }
 
@@ -531,31 +537,28 @@ function setupZanichelliBookLoader() {
       }
       isbnField.disabled = false;
     } catch (err) {
-      if (requestId !== zanSyncRequestId) return;
+      if (requestId !== tokenBookSyncRequestId) return;
       isbnField.innerHTML = `<option value="">Errore: ${err.message}</option>`;
     }
   }
 
-  if (tokenField) {
-    tokenField.addEventListener('input', () => {
-      clearTimeout(zanSyncTimer);
-      zanSyncTimer = setTimeout(syncZanBooks, 450);
-    });
-  }
-  if (usernameField) {
-    usernameField.addEventListener('input', () => {
-      clearTimeout(zanSyncTimer);
-      zanSyncTimer = setTimeout(syncZanBooks, 450);
-    });
-  }
-  if (passwordField) {
-    passwordField.addEventListener('input', () => {
-      clearTimeout(zanSyncTimer);
-      zanSyncTimer = setTimeout(syncZanBooks, 450);
+  for (const field of [tokenField, usernameField, passwordField]) {
+    if (!field) continue;
+    field.addEventListener('input', () => {
+      clearTimeout(tokenBookSyncTimer);
+      tokenBookSyncTimer = setTimeout(syncBooks, 450);
     });
   }
 
-  syncZanBooks();
+  syncBooks();
+}
+
+function setupZanichelliBookLoader() {
+  setupTokenIsbnBookLoader('/api/zanichelli-books');
+}
+
+function setupLoescherBookLoader() {
+  setupTokenIsbnBookLoader('/api/loescher-books');
 }
 
 /* ─── Bsmart books loader ─── */

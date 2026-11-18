@@ -11,6 +11,7 @@ import {
   loginSanoma,
   getBookCatalog
 } from './providers/src/sanoma/auth.js';
+import { loginLoescher, fetchLoescherBooks } from './providers/loescher.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -78,6 +79,16 @@ const PROVIDERS = {
       { name: 'password', label: 'Password', type: 'password', required: true, placeholder: '••••••••' },
       { name: 'bookId', label: 'Libro', type: 'select', required: true, placeholder: 'Seleziona un libro', dynamicOptions: true },
       { name: 'annotations', label: 'Scarica e integra Annotazioni', type: 'checkbox', required: false },
+    ]
+  },
+  loescher: {
+    label: 'Loescher (myLIM)',
+    emoji: '📘',
+    fields: [
+      { name: 'username', label: 'Email o Username Imparosulweb', type: 'text', required: false, placeholder: 'user@email.com' },
+      { name: 'password', label: 'Password', type: 'password', required: false, placeholder: '••••••••' },
+      { name: 'isbn', label: 'Libro', type: 'select', required: true, placeholder: 'Seleziona un libro', dynamicOptions: true },
+      { name: 'token', label: 'Token JWT (se accedi con Zaino Digitale / SSO)', type: 'text', required: false, placeholder: 'eyJ0eXAi...', advanced: true },
     ]
   }
 };
@@ -568,6 +579,36 @@ app.post('/api/zanichelli-books', async (req, res) => {
     }
 
     res.status(200).json({ books: returnBooks, token });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/loescher-books', async (req, res) => {
+  const { username, password, token: inputToken } = req.body || {};
+  let token = inputToken;
+
+  if (!token && (!username || !password)) {
+    return res.status(400).json({ error: 'Fornisci il token JWT oppure email/username e password' });
+  }
+
+  try {
+    if (!token) {
+      try {
+        token = await loginLoescher(username, password);
+      } catch (loginErr) {
+        return res.status(401).json({
+          error: `${loginErr.message}. Se accedi con Zaino Digitale/SSO usa il Token JWT (Opzioni avanzate).`
+        });
+      }
+    }
+
+    const books = await fetchLoescherBooks(token);
+    const downloadable = books
+      .filter(b => b.hasPdf)
+      .map(b => ({ isbn: b.isbn, title: b.title }));
+
+    res.status(200).json({ books: downloadable, token });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
